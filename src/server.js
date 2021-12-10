@@ -2,22 +2,13 @@
 
 import { VOLQueryDBSQLite }         from './VOLQueryDBSQLite';
 import { VOLQueryREST }             from './VOLQueryREST';
-import sqlite3                      from 'better-sqlite3';
 import * as env                     from 'env';
 import bodyParser                   from 'body-parser';
 import express                      from 'express';
 import * as fgc                     from 'fgc';
-import * as vol                     from 'vol';
 
 //----------------------------------------------------------------//
 export async function makeServer ( db ) {
-
-    db = db || new sqlite3 ( env.SQLITE_FILE );
-
-    const consensusService = new vol.ConsensusService ();
-    await consensusService.initializeWithNodeURLAsync ( env.VOL_PRIMARY_URL );
-    await consensusService.startServiceLoopAsync ();
-    console.log ( 'STARTED CONSENSUS AT HEIGHT:', consensusService.height );
 
     const server = express ();
 
@@ -33,7 +24,7 @@ export async function makeServer ( db ) {
 
     let router = express.Router ();
 
-    router.use ( new VOLQueryREST ( consensusService, new VOLQueryDBSQLite ( db )).router );
+    router.use ( new VOLQueryREST ( new VOLQueryDBSQLite ( db )).router );
 
     router.get ( '/', ( request, result ) => {
         const message = {
