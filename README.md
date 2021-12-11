@@ -1,1 +1,1 @@
-# vol-query-js
+Example scanner and database builder for Volition.
