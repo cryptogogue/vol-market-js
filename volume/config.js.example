@@ -1,0 +1,6 @@
+/* eslint-disable no-whitespace-before-property */
+
+export const PORT               = 7777;
+export const SQLITE_FILE        = './volume/sqlite.db';
+export const VOL_PRIMARY_URL    = 'https://beta.volitionccg.com';
+export const DB_COMMAND_KEY     = '';

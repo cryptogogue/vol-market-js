@@ -2,7 +2,6 @@
 
 import { VOLQueryDBSQLite }         from './VOLQueryDBSQLite';
 import { VOLQueryREST }             from './VOLQueryREST';
-import * as env                     from 'env';
 import bodyParser                   from 'body-parser';
 import express                      from 'express';
 import * as fgc                     from 'fgc';

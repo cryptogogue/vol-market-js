@@ -9,7 +9,3 @@ function getEnv ( name, fallback ) {
     assert ( value !== undefined, `Missing ${ name } environment variable.` );
     return value;
 }
-
-export const PORT                       = parseInt ( getEnv ( 'PORT', 7777 ), 10 );
-export const SQLITE_FILE                = getEnv ( 'SQLITE_FILE' );
-export const VOL_PRIMARY_URL            = getEnv ( 'VOL_PRIMARY_URL' );

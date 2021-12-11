@@ -1,0 +1,19 @@
+#!/bin/bash
+
+version: '3.5'
+
+services:
+
+    webservice:
+        container_name: $DOCKER_CONTAINER_NAME
+        image: $DOCKER_IMAGE_NAME
+        build: ./
+        volumes:
+             - ./volume:/app/volume
+        labels:
+            - traefik.enable=true
+            - traefik.http.routers.$DOCKER_CONTAINER_NAME.rule=Host(`$DOMAIN_NAME`)
+            - traefik.http.routers.$DOCKER_CONTAINER_NAME.tls=true
+            - traefik.http.routers.$DOCKER_CONTAINER_NAME.tls.certresolver=letsencrypt
+            - traefik.http.routers.$DOCKER_CONTAINER_NAME.service=$DOCKER_CONTAINER_NAME
+            - traefik.http.services.$DOCKER_CONTAINER_NAME.loadbalancer.server.port=$PORT

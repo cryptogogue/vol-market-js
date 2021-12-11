@@ -11,7 +11,7 @@
                     "./src"
                 ],
                 "alias": {
-                    "config": "./volume-volbot/config",
+                    "config": "./volume/config",
                     "fgc": "./src/packages/fgc-common-js-src/export-node",
                     "vol": "./src/packages/vol-common-js-src/export",
                     "jsencrypt": "node-jsencrypt"

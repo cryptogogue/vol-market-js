@@ -5,11 +5,11 @@ process.on ( 'uncaughtException', function ( err ) {
     process.exit ( 1 );
 });
 
-import * as env                     from 'env';
+import * as config                  from 'config';
 import { makeServer }               from 'server';
 
 ( async () => {
     const server = await makeServer ();
-    await server.listen ( env.PORT );
-    console.log ( 'LISTENING ON PORT:', env.PORT );
+    await server.listen ( config.PORT );
+    console.log ( 'LISTENING ON PORT:', config.PORT );
 })();
