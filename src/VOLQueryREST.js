@@ -26,6 +26,7 @@ export class VOLQueryREST {
         this.router.get         ( '/consensus',                     this.getConsensus.bind ( this ));
         this.router.get         ( '/offers',                        this.getOffers.bind ( this ));
         this.router.get         ( '/offers/:offerID',               this.getOffer.bind ( this ));
+        this.router.get         ( '/stamps',                        this.getStamps.bind ( this ));
     }
 
     //----------------------------------------------------------------//
@@ -75,6 +76,26 @@ export class VOLQueryREST {
 
         try {
             const searchResult = this.volQueryDB.getOffers ( options );
+            fgc.rest.handleSuccess ( response, searchResult );
+        }
+        catch ( error ) {
+            fgc.rest.handleError ( response, 400, error );
+        }
+    }
+
+    //----------------------------------------------------------------//
+    async getStamps ( request, response ) {
+
+        const query             = request.query || {};
+
+        const options = {
+            base:               _.has ( query, 'base' ) ? parseInt ( query.base ) : 0,
+            count:              _.has ( query, 'count' ) ? parseInt ( query.count ) : 20,
+            token:              query.token || false,
+        };
+
+        try {
+            const searchResult = this.volQueryDB.getStamps ( options );
             fgc.rest.handleSuccess ( response, searchResult );
         }
         catch ( error ) {

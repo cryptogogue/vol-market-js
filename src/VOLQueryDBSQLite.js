@@ -95,6 +95,8 @@ export class VOLQueryDBSQLite {
             )
         `).run ();
 
+        // this.pushControlCommand ( DB_CONTROL_COMMANDS.RESET_INGEST );
+
         const command = this.getCommands ()[ 0 ];
         if ( command ) {
             console.log ( 'DB COMMAND:', command );
@@ -103,6 +105,7 @@ export class VOLQueryDBSQLite {
                 this.db.prepare ( `DROP INDEX IF EXISTS offerAssets_type` ).run ();
                 this.db.prepare ( `DROP TABLE IF EXISTS offerAssets` ).run ();
                 this.db.prepare ( `DROP TABLE IF EXISTS offers` ).run ();
+                this.db.prepare ( `DROP TABLE IF EXISTS assets` ).run ();
                 this.db.prepare ( `DROP TABLE IF EXISTS nonces` ).run ();
                 this.db.prepare ( `UPDATE blocks SET ingested = FALSE WHERE ingested = TRUE` ).run ();
             }
@@ -153,6 +156,18 @@ export class VOLQueryDBSQLite {
 
         this.db.prepare ( `CREATE INDEX IF NOT EXISTS offerAssets_type ON offerAssets ( type )` ).run ();
 
+        this.db.prepare (`
+            CREATE TABLE IF NOT EXISTS assets (
+                id              INTEGER         PRIMARY KEY AUTOINCREMENT,
+                assetID         TEXT            NOT NULL,
+                height          INTEGER         NOT NULL DEFAULT 0,
+                stampOn         INTEGER         NOT NULL DEFAULT 0,
+                stampOff        INTEGER         NOT NULL DEFAULT 0
+            )
+        `).run ();
+
+        this.db.prepare ( `CREATE INDEX IF NOT EXISTS assets_assetID ON assets ( assetID )` ).run ();
+
         ( async () => {
 
             console.log ( 'INITIALIZING CONSENSUS SERVICE' );
@@ -161,10 +176,39 @@ export class VOLQueryDBSQLite {
             await this.consensusService.startServiceLoopAsync ();
             console.log ( 'STARTED CONSENSUS AT HEIGHT:', this.consensusService.height );
 
+            console.log ( 'POPULATING BLOCK SEARCHES' );
             this.populateBlockSearches ();
+
+            console.log ( 'STARTING SERVICE LOOP' );
             this.serviceLoopAsync ();
+
+            console.log ( 'STARTING INGEST LOOP' );
             this.ingestLoopAsync ();
         })();
+    }
+
+    //----------------------------------------------------------------//
+    countBlocks () {
+
+        const row = this.db.prepare ( `SELECT height FROM blocks ORDER BY height DESC` ).get ();
+        return row ? row.height + 1 : 0;
+    }
+
+    //----------------------------------------------------------------//
+    async fetchAssetAsync ( assetID ) {
+
+        try {
+            const assetURL = this.consensusService.getServiceURL ( `/assets/${ assetID }` );
+            const result = await this.revocable.fetchJSON ( assetURL, undefined, FETCH_BLOCK_TIMEOUT );
+            if ( result && result.asset ) {
+                result.asset.stamp = result.stamp || false;
+                return result.asset;
+            }
+        }
+        catch ( error ) {
+            console.log ( error );
+        }
+        return false;
     }
 
     //----------------------------------------------------------------//
@@ -212,9 +256,7 @@ export class VOLQueryDBSQLite {
         const matchSeller       = options.matchSeller || -1;
         const all               = options.all ? 1 : 0;
 
-        const result = {
-            offers:         [],
-        };  
+        const result = {};  
 
         let baseUTC;    // baseUTC excludes expired offers
         let origin;     // *excludes* offers added after search begins
@@ -289,22 +331,46 @@ export class VOLQueryDBSQLite {
     }
 
     //----------------------------------------------------------------//
-    getOpenOffers () {
+    getStamps ( options ) {
 
-        const nowUTC = luxon.DateTime.utc ().startOf ( 'second' ).toISO ({ suppressMilliseconds: true });
-        console.log ( nowUTC );
-        const rows = this.db.prepare ( `SELECT * FROM offers WHERE known = TRUE AND closed IS NULL AND ? < expiration` ).all ( nowUTC )
-        console.log ( 'RESULT:', rows.length );
-        return rows.map (( row ) => { return this.rowToOffer ( row ); });
+        const result = {};  
+
+        let searchTop;
+
+        if ( options.token ) {
+
+            const token     = JSON.parse ( Buffer.from ( options.token, 'base64' ).toString ( 'utf8' ));
+            searchTop       = token [ 0 ];
+        }
+        else {
+
+            searchTop       = this.countBlocks ();
+            result.token    = Buffer.from ( JSON.stringify ([ searchTop ]), 'utf8' ).toString ( 'base64' );
+
+            const countRow  = this.db.prepare ( `SELECT COUNT ( * ) AS count FROM assets WHERE stampOff < stampOn` ).get ();
+            result.count    = countRow.count;
+        }
+
+        // stampOn MUST be less than the search top (i.e. became a stamp BEFORE the search)
+        // asset is ALWAYS a stamp if stampOff < stampOn
+        // if stampOff was set AFTER search, then ignore it - still a stamp
+
+        const rows = this.db.prepare ( `SELECT * FROM assets WHERE ( stampOn < ? ) AND (( stampOff < stampOn ) OR ( ? <= stampOff )) LIMIT ?, ?` ).all (
+            searchTop,
+            searchTop,
+            options.base || 0,
+            options.count || 20
+        );
+
+        result.stamps = rows.map (( row ) => { return row.assetID; });
+        return result;
     }
 
     //----------------------------------------------------------------//
     getOpenOffers () {
 
         const nowUTC = luxon.DateTime.utc ().startOf ( 'second' ).toISO ({ suppressMilliseconds: true });
-        console.log ( nowUTC );
         const rows = this.db.prepare ( `SELECT * FROM offers WHERE known = TRUE AND closed IS NULL AND ? < expiration` ).all ( nowUTC )
-        console.log ( 'RESULT:', rows.length );
         return rows.map (( row ) => { return this.rowToOffer ( row ); });
     }
 
@@ -323,7 +389,7 @@ export class VOLQueryDBSQLite {
 
         console.log ( 'INGEST BLOCK:', height );
 
-        // const assetIDs = {};
+        const assetIDs = {};
         for ( let transaction of blockBody.transactions ) {
 
             const txBody = transaction.bodyIn || JSON.parse ( transaction.body );
@@ -359,17 +425,17 @@ export class VOLQueryDBSQLite {
                 }
 
                 case 'RUN_SCRIPT': {
-                    // console.log ( '  RUN_SCRIPT:' );
-                    // for ( let invocation of txBody.invocations ) {
-                    //     for ( let assetID in invocation.assetParams ) {
-                    //         assetIDs [ assetID ] = true;
-                    //         console.log ( '    ', assetID );
-                    //     }
-                    // }
+                    for ( let invocation of txBody.invocations ) {
+                        for ( let assetID of Object.values ( invocation.assetParams )) {
+                            assetIDs [ assetID ] = true;
+                        }
+                    }
                     break;
                 }
             }
         }
+
+        await this.updateAssetsAsync ( Object.keys ( assetIDs ), height );
     }
 
     //----------------------------------------------------------------//
@@ -392,15 +458,15 @@ export class VOLQueryDBSQLite {
             }
         }
 
-        this.revocable.timeout (() => { this.serviceLoopAsync ()}, 5000 );
+        this.revocable.timeout (() => { this.ingestLoopAsync ()}, 5000 );
     }
 
     //----------------------------------------------------------------//
     populateBlockSearches () {
 
-        const row = this.db.prepare ( `SELECT COUNT ( * ) AS count FROM blocks` ).get ();
+        const count = this.countBlocks ();
 
-        for ( let i = row.count; i < this.consensusService.height; ++i ) {
+        for ( let i = count; i < this.consensusService.height; ++i ) {
             this.db.prepare ( `INSERT INTO blocks ( height ) VALUES ( ? )` ).run ( i );
         }
     }
@@ -442,7 +508,6 @@ export class VOLQueryDBSQLite {
 
                     const block = result.block;
                     const blockBody = JSON.parse ( block.body );
-                    // console.log ( 'GOT BLOCK:', height, blockBody.transactions.length );
 
                     this.db.prepare (`
                         UPDATE blocks SET found = TRUE, block = ?, txCount = ? WHERE height = ?
@@ -501,6 +566,84 @@ export class VOLQueryDBSQLite {
                 nonces.closed
             );
             nonces.id = this.db.lastInsertRowId;
+        }
+    }
+
+    //----------------------------------------------------------------//
+    async updateAssetsAsync ( assetIDs, height ) {
+
+        if ( assetIDs.length === 0 ) return;
+
+        // assets already in the database
+        const update = {};
+
+        // only update assets that are not yet in the database OR have a height less than the current block
+        const getAssetStatement = this.db.prepare ( `SELECT * FROM assets WHERE assetID = ?` );
+        assetIDs = assetIDs.filter (( assetID ) => {
+            const row = getAssetStatement.get ( assetID );
+            if ( row ) {
+                update [ assetID ] = row;
+                return row.height < height;
+            }
+            return true;
+        });
+
+        if ( assetIDs.length === 0 ) return;
+
+        // find all the assets that need an update
+        const found = {};
+        while ( _.size ( found ) < assetIDs.length ) {
+
+            const batch = assetIDs.filter (( assetID ) => { return !_.has ( found, assetID ); }).slice ( 0, 32 );
+
+            const fetchAssetAsync = async ( assetID ) => {
+                const asset = await this.fetchAssetAsync ( assetID );
+                if ( asset ) {
+                    found [ assetID ] = asset;
+                }
+            }
+
+            const promises = [];
+            for ( let assetID of batch ) {
+                promises.push ( fetchAssetAsync ( assetID ));
+            }
+            await this.revocable.all ( promises );
+        }
+
+        // update or insert the assets
+
+        const updateAssetStatement = this.db.prepare ( `UPDATE assets SET height = ?, stampOn = ?, stampOff = ? WHERE id = ?` );
+        const insertAssetStatement = this.db.prepare ( `INSERT INTO assets ( assetID, height, stampOn, stampOff ) VALUES ( ?, ?, ?, ? )` );
+
+        for ( let asset of Object.values ( found )) {
+
+            const isStamp = asset.stamp ? true : false;
+
+            if ( _.has ( update, asset.assetID )) {
+
+                const row = update [ asset.assetID ];
+
+                let stampOn     = row.stampOn;
+                let stampOff    = row.stampOff;
+
+                const wasStamp = stampOff < stampOn;
+
+                if ( isStamp !== wasStamp ) {
+                    if ( isStamp ) {
+                        stampOn = height;
+                    }
+                    else {
+                        stampOff = height;
+                    }
+                }
+
+                updateAssetStatement.run ( height, stampOn, stampOff, update [ asset.assetID ]);
+            }
+            else {
+
+                const stampOn = isStamp ? height : 0;
+                insertAssetStatement.run ( asset.assetID, height, stampOn, 0 );
+            }
         }
     }
 }
