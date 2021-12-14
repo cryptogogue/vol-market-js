@@ -65,23 +65,9 @@ export class VOLQueryDBSQLite {
     }
 
     //----------------------------------------------------------------//
-    async fetchAccountAsync ( accountID, height ) {
-
-        try {
-            const accountURL = this.consensusService.getServiceURL ( `/accounts/${ accountID }`, { at: height });
-            const result = await this.revocable.fetchJSON ( accountURL, undefined );
-            if ( result && result.account ) {
-                return result.account;
-            }
-        }
-        catch ( error ) {
-            console.log ( error );
-        }
-        delete fetching [ height ];
-    }
-
-    //----------------------------------------------------------------//
     constructor ( db ) {
+
+        this.accountIndexCache  = {};
 
         this.height             = 0;
         this.consensusService   = new vol.ConsensusService ();
@@ -160,13 +146,17 @@ export class VOLQueryDBSQLite {
             CREATE TABLE IF NOT EXISTS assets (
                 id              INTEGER         PRIMARY KEY AUTOINCREMENT,
                 assetID         TEXT            NOT NULL,
+                owner           INTEGER,
                 height          INTEGER         NOT NULL DEFAULT 0,
                 stampOn         INTEGER         NOT NULL DEFAULT 0,
-                stampOff        INTEGER         NOT NULL DEFAULT 0
+                stampOff        INTEGER         NOT NULL DEFAULT 0,
+                asset           TEXT            NOT NULL,
+                stamp           TEXT
             )
         `).run ();
 
         this.db.prepare ( `CREATE INDEX IF NOT EXISTS assets_assetID ON assets ( assetID )` ).run ();
+        this.db.prepare ( `CREATE INDEX IF NOT EXISTS assets_owner ON assets ( owner )` ).run ();
 
         ( async () => {
 
@@ -195,14 +185,37 @@ export class VOLQueryDBSQLite {
     }
 
     //----------------------------------------------------------------//
-    async fetchAssetAsync ( assetID ) {
+    async fetchAccountIndexAsync ( accountID ) {
+
+        if ( !_.has ( this.accountIndexCache, accountID )) {
+
+            try {
+                const accountURL = this.consensusService.getServiceURL ( `/accounts/${ accountID }` );
+                const result = await this.revocable.fetchJSON ( accountURL, undefined, FETCH_BLOCK_TIMEOUT );
+                if ( !( result && result.account )) return false;
+                this.accountIndexCache [ accountID ] = result.account.index;
+            }
+            catch ( error ) {
+                console.log ( error );
+                return false;
+            }
+        }
+        return this.accountIndexCache [ accountID ];
+    }
+
+    //----------------------------------------------------------------//
+    async fetchAssetInfoAsync ( assetID, height ) {
 
         try {
-            const assetURL = this.consensusService.getServiceURL ( `/assets/${ assetID }` );
+            const assetURL = this.consensusService.getServiceURL ( `/assets/${ assetID }`, { at: height });
             const result = await this.revocable.fetchJSON ( assetURL, undefined, FETCH_BLOCK_TIMEOUT );
             if ( result && result.asset ) {
-                result.asset.stamp = result.stamp || false;
-                return result.asset;
+
+                return {
+                    owner:      result.asset.owner ? await this.fetchAccountIndexAsync ( result.asset.owner ) : false,
+                    asset:      result.asset,
+                    stamp:      result.stamp || false,
+                };
             }
         }
         catch ( error ) {
@@ -333,7 +346,10 @@ export class VOLQueryDBSQLite {
     //----------------------------------------------------------------//
     getStamps ( options ) {
 
-        const result = {};  
+        const excludeSeller     = options.excludeSeller || -1;
+        const matchSeller       = options.matchSeller || -1;
+
+        const result = {};
 
         let searchTop;
 
@@ -347,7 +363,17 @@ export class VOLQueryDBSQLite {
             searchTop       = this.countBlocks ();
             result.token    = Buffer.from ( JSON.stringify ([ searchTop ]), 'utf8' ).toString ( 'base64' );
 
-            const countRow  = this.db.prepare ( `SELECT COUNT ( * ) AS count FROM assets WHERE stampOff < stampOn` ).get ();
+            const countRow  = this.db.prepare (`
+                SELECT COUNT ( * ) AS count
+                FROM assets
+                    WHERE           stampOff < stampOn
+                        AND         owner != ?
+                        AND         ( ? < 0 OR owner = ? )
+            `).get (
+                excludeSeller,
+                matchSeller,
+                matchSeller
+            );
             result.count    = countRow.count;
         }
 
@@ -355,14 +381,25 @@ export class VOLQueryDBSQLite {
         // asset is ALWAYS a stamp if stampOff < stampOn
         // if stampOff was set AFTER search, then ignore it - still a stamp
 
-        const rows = this.db.prepare ( `SELECT * FROM assets WHERE ( stampOn < ? ) AND (( stampOff < stampOn ) OR ( ? <= stampOff )) LIMIT ?, ?` ).all (
+        const rows = this.db.prepare (`
+            SELECT *
+            FROM assets
+            WHERE           ( stampOn < ? )
+                AND         (( stampOff < stampOn ) OR ( ? <= stampOff ))
+                AND         owner != ?
+                AND         ( ? < 0 OR owner = ? )
+            LIMIT ?, ?
+        `).all (
             searchTop,
             searchTop,
+            excludeSeller,
+            matchSeller,
+            matchSeller,
             options.base || 0,
             options.count || 20
         );
 
-        result.stamps = rows.map (( row ) => { return row.assetID; });
+        result.stamps = rows.map (( row ) => { return this.rowToStamp ( row ); });
         return result;
     }
 
@@ -414,10 +451,10 @@ export class VOLQueryDBSQLite {
                     const offer = await this.fetchOfferAsync ( txBody.assetIdentifiers [ 0 ], height );
                     fgc.assert ( offer );
 
-                    const seller = await this.fetchAccountAsync ( offer.seller, height );
-                    fgc.assert ( seller );
+                    const seller = await this.fetchAccountIndexAsync ( offer.seller );
+                    fgc.assert ( seller !== false );
 
-                    offer.seller = seller.index;
+                    offer.seller = seller;
 
                     this.affirmKnownOffer ( offer );
                     console.log ( offer );
@@ -496,6 +533,20 @@ export class VOLQueryDBSQLite {
     }
 
     //----------------------------------------------------------------//
+    rowToStamp ( row ) {
+
+        const asset = JSON.parse ( row.asset );
+        const stamp = row.stamp ? JSON.parse ( row.stamp ) : false;
+
+        return {
+            assetID:            asset.assetID,
+            ownerIndex:         row.owner,
+            asset:              asset,
+            stamp:              stamp,
+        };
+    }
+
+    //----------------------------------------------------------------//
     async serviceLoopAsync () {
 
         const fetching  = {};
@@ -539,7 +590,7 @@ export class VOLQueryDBSQLite {
             if ( !promise ) break;
             await promise;
 
-        } while ( _.size ( fetching ))
+        } while ( _.size ( fetching ));
 
         this.revocable.timeout (() => { this.serviceLoopAsync ()}, 5000 );
     }
@@ -596,28 +647,34 @@ export class VOLQueryDBSQLite {
 
             const batch = assetIDs.filter (( assetID ) => { return !_.has ( found, assetID ); }).slice ( 0, 32 );
 
-            const fetchAssetAsync = async ( assetID ) => {
-                const asset = await this.fetchAssetAsync ( assetID );
-                if ( asset ) {
-                    found [ assetID ] = asset;
+            const fetchAssetInfoAsync = async ( assetID ) => {
+                const assetInfo = await this.fetchAssetInfoAsync ( assetID, height );
+                if ( assetInfo ) {
+                    found [ assetID ] = assetInfo;
                 }
             }
 
             const promises = [];
             for ( let assetID of batch ) {
-                promises.push ( fetchAssetAsync ( assetID ));
+                promises.push ( fetchAssetInfoAsync ( assetID ));
             }
             await this.revocable.all ( promises );
         }
 
         // update or insert the assets
 
-        const updateAssetStatement = this.db.prepare ( `UPDATE assets SET height = ?, stampOn = ?, stampOff = ? WHERE id = ?` );
-        const insertAssetStatement = this.db.prepare ( `INSERT INTO assets ( assetID, height, stampOn, stampOff ) VALUES ( ?, ?, ?, ? )` );
+        const updateAssetStatement = this.db.prepare ( `UPDATE assets SET owner = ?, height = ?, stampOn = ?, stampOff = ?, asset = ?, stamp = ? WHERE id = ?` );
+        const insertAssetStatement = this.db.prepare ( `INSERT INTO assets ( assetID, owner, height, stampOn, stampOff, asset, stamp ) VALUES ( ?, ?, ?, ?, ?, ?, ? )` );
 
-        for ( let asset of Object.values ( found )) {
+        for ( let assetInfo of Object.values ( found )) {
 
-            const isStamp = asset.stamp ? true : false;
+            const owner         = ( assetInfo.owner !== false ) ? assetInfo.owner : null;
+            const asset         = assetInfo.asset;
+            const stamp         = assetInfo.stamp;
+            const isStamp       = (( assetInfo.owner !== false ) && ( stamp !== false ));
+
+            const assetJSON     = JSON.stringify ( asset );
+            const stampJSON     = stamp ? JSON.stringify ( stamp ) : null;
 
             if ( _.has ( update, asset.assetID )) {
 
@@ -637,12 +694,12 @@ export class VOLQueryDBSQLite {
                     }
                 }
 
-                updateAssetStatement.run ( height, stampOn, stampOff, update [ asset.assetID ]);
+                updateAssetStatement.run ( owner, height, stampOn, stampOff, assetJSON, stampJSON, row.id );
             }
             else {
 
                 const stampOn = isStamp ? height : 0;
-                insertAssetStatement.run ( asset.assetID, height, stampOn, 0 );
+                insertAssetStatement.run ( asset.assetID, owner, height, stampOn, 0, assetJSON, stampJSON );
             }
         }
     }

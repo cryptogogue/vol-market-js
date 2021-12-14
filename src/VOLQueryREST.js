@@ -91,6 +91,8 @@ export class VOLQueryREST {
         const options = {
             base:               _.has ( query, 'base' ) ? parseInt ( query.base ) : 0,
             count:              _.has ( query, 'count' ) ? parseInt ( query.count ) : 20,
+            excludeSeller:      query.exclude_seller || false,
+            matchSeller:        query.match_seller|| false,
             token:              query.token || false,
         };
 
