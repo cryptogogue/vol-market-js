@@ -81,7 +81,7 @@ export class VOLQueryDBSQLite {
             )
         `).run ();
 
-        // this.pushControlCommand ( DB_CONTROL_COMMANDS.RESET_INGEST );
+        this.pushControlCommand ( DB_CONTROL_COMMANDS.RESET_INGEST );
 
         const command = this.getCommands ()[ 0 ];
         if ( command ) {
@@ -229,12 +229,8 @@ export class VOLQueryDBSQLite {
 
         try {
             const offerURL = this.consensusService.getServiceURL ( `/offers/${ assetID }`, { at: height });
-            console.log ( 'FETCHING OFFER:', offerURL );
             const result = await this.revocable.fetchJSON ( offerURL, undefined, FETCH_BLOCK_TIMEOUT );
-            if ( result ) {
-                console.log ( result );
-                return result;
-            }
+            if ( result ) return result;
         }
         catch ( error ) {
             console.log ( error );
@@ -427,6 +423,13 @@ export class VOLQueryDBSQLite {
         console.log ( 'INGEST BLOCK:', height );
 
         const assetIDs = {};
+        const addAssetIDs = ( more ) => {
+            console.log ( 'ADDING ASSET IDs:', JSON.stringify ( more ));
+            for ( let assetID of more ) {
+                assetIDs [ assetID ] = true;
+            }
+        }
+
         for ( let transaction of blockBody.transactions ) {
 
             const txBody = transaction.bodyIn || JSON.parse ( transaction.body );
@@ -435,11 +438,18 @@ export class VOLQueryDBSQLite {
             switch ( txBody.type ) {
 
                 case 'BUY_ASSETS': {
+
+                    const offer = await this.getOffer ( txBody.offerID );
+                    if ( offer ) {
+                        addAssetIDs ( offer.assets.map (( asset ) => { return asset.assetID; }));
+                    }
+
                     this.closeOffer ( txBody.offerID, 'COMPLETED' );
                     break;
                 }
 
                 case 'CANCEL_OFFER': {
+
                     const offer = await this.fetchOfferAsync ( txBody.identifier, height - 1 );
                     fgc.assert ( offer );
                     this.closeOffer ( offer.offerID, 'CANCELLED' );
@@ -451,28 +461,34 @@ export class VOLQueryDBSQLite {
                     const offer = await this.fetchOfferAsync ( txBody.assetIdentifiers [ 0 ], height );
                     fgc.assert ( offer );
 
+                    addAssetIDs ( offer.assets.map (( asset ) => { return asset.assetID; }));
+
                     const seller = await this.fetchAccountIndexAsync ( offer.seller );
                     fgc.assert ( seller !== false );
 
                     offer.seller = seller;
 
                     this.affirmKnownOffer ( offer );
-                    console.log ( offer );
                     break;
                 }
 
                 case 'RUN_SCRIPT': {
+
                     for ( let invocation of txBody.invocations ) {
-                        for ( let assetID of Object.values ( invocation.assetParams )) {
-                            assetIDs [ assetID ] = true;
-                        }
+                        addAssetIDs ( Object.values ( invocation.assetParams ));
                     }
+                    break;
+                }
+
+                case 'SEND_ASSETS': {
+
+                    addAssetIDs ( txBody.assetIdentifiers );
                     break;
                 }
             }
         }
 
-        await this.updateAssetsAsync ( Object.keys ( assetIDs ), height );
+        await this.updateAssetsAsync ( Object.keys ( assetIDs ), this.consensusService.height );
     }
 
     //----------------------------------------------------------------//
@@ -625,6 +641,8 @@ export class VOLQueryDBSQLite {
 
         if ( assetIDs.length === 0 ) return;
 
+        console.log ( 'UPDATE ASSETS:', JSON.stringify ( assetIDs ));
+
         // assets already in the database
         const update = {};
 
@@ -667,6 +685,8 @@ export class VOLQueryDBSQLite {
         const insertAssetStatement = this.db.prepare ( `INSERT INTO assets ( assetID, owner, height, stampOn, stampOff, asset, stamp ) VALUES ( ?, ?, ?, ?, ?, ?, ? )` );
 
         for ( let assetInfo of Object.values ( found )) {
+
+            console.log ( '   adding asset:', assetInfo.asset.assetID, assetInfo.owner );
 
             const owner         = ( assetInfo.owner !== false ) ? assetInfo.owner : null;
             const asset         = assetInfo.asset;
