@@ -81,7 +81,7 @@ export class VOLQueryDBSQLite {
             )
         `).run ();
 
-        this.pushControlCommand ( DB_CONTROL_COMMANDS.RESET_INGEST );
+        // this.pushControlCommand ( DB_CONTROL_COMMANDS.RESET_INGEST );
 
         const command = this.getCommands ()[ 0 ];
         if ( command ) {
