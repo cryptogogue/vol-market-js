@@ -24,8 +24,9 @@ export class VOLQueryREST {
 
         this.router.post        ( '/commands/:command',             this.postCommand.bind ( this ));
         this.router.get         ( '/consensus',                     this.getConsensus.bind ( this ));
-        this.router.get         ( '/offers',                        this.getOffers.bind ( this ));
         this.router.get         ( '/offers/:offerID',               this.getOffer.bind ( this ));
+        this.router.get         ( '/offers',                        this.getOffers.bind ( this ));
+        this.router.get         ( '/stamps/:assetID',               this.getStamp.bind ( this ));
         this.router.get         ( '/stamps',                        this.getStamps.bind ( this ));
     }
 
@@ -77,6 +78,19 @@ export class VOLQueryREST {
         try {
             const searchResult = this.volQueryDB.getOffers ( options );
             fgc.rest.handleSuccess ( response, searchResult );
+        }
+        catch ( error ) {
+            fgc.rest.handleError ( response, 400, error );
+        }
+    }
+
+    //----------------------------------------------------------------//
+    async getStamp ( request, response ) {
+
+        try {
+            const assetID = request.params.assetID;
+            const stamp = this.volQueryDB.getStamp ( assetID );
+            fgc.rest.handleSuccess ( response, { stamp: stamp });
         }
         catch ( error ) {
             fgc.rest.handleError ( response, 400, error );

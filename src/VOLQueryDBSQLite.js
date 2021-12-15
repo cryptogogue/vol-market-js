@@ -16,6 +16,9 @@ export const DB_CONTROL_COMMANDS = {
     RESET_INGEST:       'RESET_INGEST',
 };
 
+//const debugLog = function () {}
+const debugLog = function ( ...args ) { console.log ( '@QUERY:', ...args ); }
+
 //================================================================//
 // VOLQueryDBSQLite
 //================================================================//
@@ -85,9 +88,9 @@ export class VOLQueryDBSQLite {
 
         const command = this.getCommands ()[ 0 ];
         if ( command ) {
-            console.log ( 'DB COMMAND:', command );
+            debugLog ( 'DB COMMAND:', command );
             if ( command === DB_CONTROL_COMMANDS.RESET_INGEST ) {
-                console.log ( 'RESETTING INGEST' );
+                debugLog ( 'RESETTING INGEST' );
                 this.db.prepare ( `DROP INDEX IF EXISTS offerAssets_type` ).run ();
                 this.db.prepare ( `DROP TABLE IF EXISTS offerAssets` ).run ();
                 this.db.prepare ( `DROP TABLE IF EXISTS offers` ).run ();
@@ -160,19 +163,19 @@ export class VOLQueryDBSQLite {
 
         ( async () => {
 
-            console.log ( 'INITIALIZING CONSENSUS SERVICE' );
+            debugLog ( 'INITIALIZING CONSENSUS SERVICE' );
             await this.consensusService.initializeWithNodeURLAsync ( config.VOL_PRIMARY_URL );
-            console.log ( 'STARTING CONSENSUS SERVICE LOOP' );
+            debugLog ( 'STARTING CONSENSUS SERVICE LOOP' );
             await this.consensusService.startServiceLoopAsync ();
-            console.log ( 'STARTED CONSENSUS AT HEIGHT:', this.consensusService.height );
+            debugLog ( 'STARTED CONSENSUS AT HEIGHT:', this.consensusService.height );
 
-            console.log ( 'POPULATING BLOCK SEARCHES' );
+            debugLog ( 'POPULATING BLOCK SEARCHES' );
             this.populateBlockSearches ();
 
-            console.log ( 'STARTING SERVICE LOOP' );
+            debugLog ( 'STARTING SERVICE LOOP' );
             this.serviceLoopAsync ();
 
-            console.log ( 'STARTING INGEST LOOP' );
+            debugLog ( 'STARTING INGEST LOOP' );
             this.ingestLoopAsync ();
         })();
     }
@@ -196,7 +199,8 @@ export class VOLQueryDBSQLite {
                 this.accountIndexCache [ accountID ] = result.account.index;
             }
             catch ( error ) {
-                console.log ( error );
+                debugLog ( 'fetchAccountIndexAsync' );
+                debugLog ( error );
                 return false;
             }
         }
@@ -219,7 +223,8 @@ export class VOLQueryDBSQLite {
             }
         }
         catch ( error ) {
-            console.log ( error );
+            debugLog ( 'fetchAssetInfoAsync' );
+            debugLog ( error );
         }
         return false;
     }
@@ -233,7 +238,8 @@ export class VOLQueryDBSQLite {
             if ( result ) return result;
         }
         catch ( error ) {
-            console.log ( error );
+            debugLog ( 'fetchOfferAsync' );
+            debugLog ( error );
         }
         return false;
     }
@@ -340,6 +346,21 @@ export class VOLQueryDBSQLite {
     }
 
     //----------------------------------------------------------------//
+    getOpenOffers () {
+
+        const nowUTC = luxon.DateTime.utc ().startOf ( 'second' ).toISO ({ suppressMilliseconds: true });
+        const rows = this.db.prepare ( `SELECT * FROM offers WHERE known = TRUE AND closed IS NULL AND ? < expiration` ).all ( nowUTC )
+        return rows.map (( row ) => { return this.rowToOffer ( row ); });
+    }
+
+    //----------------------------------------------------------------//
+    getStamp ( assetID ) {
+
+        const row = this.db.prepare ( `SELECT * FROM assets WHERE assetID = ?` ).get ( assetID );
+        return row ? this.rowToStamp ( row ) : false;
+    }
+
+    //----------------------------------------------------------------//
     getStamps ( options ) {
 
         const excludeSeller     = options.excludeSeller || -1;
@@ -400,31 +421,16 @@ export class VOLQueryDBSQLite {
     }
 
     //----------------------------------------------------------------//
-    getOpenOffers () {
-
-        const nowUTC = luxon.DateTime.utc ().startOf ( 'second' ).toISO ({ suppressMilliseconds: true });
-        const rows = this.db.prepare ( `SELECT * FROM offers WHERE known = TRUE AND closed IS NULL AND ? < expiration` ).all ( nowUTC )
-        return rows.map (( row ) => { return this.rowToOffer ( row ); });
-    }
-
-    //----------------------------------------------------------------//
-    getSellerOffers ( sellerID ) {
-
-        const rows = this.db.prepare ( `SELECT * FROM offers WHERE known = TRUE AND seller = ?` ).all ( sellerID )
-        return rows.map (( row ) => { return this.rowToOffer ( row ); });
-    }
-
-    //----------------------------------------------------------------//
     async ingestBlockAsync ( block ) {
 
         const height = block.height;
         const blockBody = JSON.parse ( block.body );
 
-        console.log ( 'INGEST BLOCK:', height );
+        debugLog ( 'INGEST BLOCK:', height );
 
         const assetIDs = {};
         const addAssetIDs = ( more ) => {
-            console.log ( 'ADDING ASSET IDs:', JSON.stringify ( more ));
+            debugLog ( 'ADDING ASSET IDs:', JSON.stringify ( more ));
             for ( let assetID of more ) {
                 assetIDs [ assetID ] = true;
             }
@@ -433,7 +439,7 @@ export class VOLQueryDBSQLite {
         for ( let transaction of blockBody.transactions ) {
 
             const txBody = transaction.bodyIn || JSON.parse ( transaction.body );
-            console.log ( `${ height }: ${ txBody.type }` );
+            debugLog ( `${ height }: ${ txBody.type }` );
 
             switch ( txBody.type ) {
 
@@ -494,7 +500,7 @@ export class VOLQueryDBSQLite {
     //----------------------------------------------------------------//
     async ingestLoopAsync () {
 
-        console.log ( 'BEGIN INGEST LOOP' );
+        debugLog ( 'BEGIN INGEST LOOP' );
 
         const statement = this.db.prepare ( `SELECT * FROM blocks WHERE ingested = FALSE AND found = TRUE AND txCount > 0 ORDER BY height DESC` );
 
@@ -506,7 +512,8 @@ export class VOLQueryDBSQLite {
                 this.db.prepare ( `UPDATE blocks SET ingested = TRUE WHERE height = ?` ).run ( row.height );
             }
             catch ( error ) {
-                console.log ( error );
+                debugLog ( 'ingestLoopAsync' );
+                debugLog ( error );
                 break;
             }
         }
@@ -586,7 +593,8 @@ export class VOLQueryDBSQLite {
                 }
             }
             catch ( error ) {
-                console.log ( error );
+                debugLog ( 'serviceLoopAsync' );
+                debugLog ( error );
             }
             delete fetching [ height ];
         }
@@ -641,7 +649,7 @@ export class VOLQueryDBSQLite {
 
         if ( assetIDs.length === 0 ) return;
 
-        console.log ( 'UPDATE ASSETS:', JSON.stringify ( assetIDs ));
+        debugLog ( 'UPDATE ASSETS:', JSON.stringify ( assetIDs ));
 
         // assets already in the database
         const update = {};
@@ -686,7 +694,7 @@ export class VOLQueryDBSQLite {
 
         for ( let assetInfo of Object.values ( found )) {
 
-            console.log ( '   adding asset:', assetInfo.asset.assetID, assetInfo.owner );
+            debugLog ( '   adding asset:', assetInfo.asset.assetID, assetInfo.owner );
 
             const owner         = ( assetInfo.owner !== false ) ? assetInfo.owner : null;
             const asset         = assetInfo.asset;
